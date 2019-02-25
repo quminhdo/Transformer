@@ -13,4 +13,4 @@ Implementation of [Transformer](https://arxiv.org/pdf/1706.03762.pdf) model usin
 ## 4. Other
 ### 4.1. Socket program
 - Run `python3 server.py -d *data_directory* -l *source_language-target_language* -d *model_number* -i *ip_address* -p *port_number*` on a server.
-- Put client.py and ipag.ttf file in the same directory. Run `python3 client.py -i *server_ip_address* -p *server_port_number*`. Add *--plot* if you want to plot attention_weights.
+- Put *client.py* and *ipag.ttf* file in the same directory. Run `python3 client.py -i *server_ip_address* -p *server_port_number*`. Add *--plot* if you want to plot attention_weights.
