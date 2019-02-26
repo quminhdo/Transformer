@@ -303,7 +303,7 @@ class Inference_Model:
         outputs = outputs.tolist()
         tokenized_outputs = [list(map(lambda byte: byte.decode("utf-8"), seq)) for seq in outputs]
         outputs = self.detokenizer(tokenized_outputs)
-        outputs = [output[:output.find(" <EOS>")] for output in outputs]
+        outputs = [output[:output.find("<EOS>")].strip() for output in outputs]
         return outputs, tokenized_outputs # list of text
 
     def restore_params(self):
