@@ -53,9 +53,11 @@ class English_Detokenizer:
 class Word_Id_Converter:
     def __init__(self, vocab_file_path, default_id, default_word="<DEFAULT>"):
         with open(vocab_file_path) as fin:
-            words = fin.read().splitlines()
+            words = [line.split()[0] if line != " " else line for line in fin.read().splitlines()]
+            words = ["<PAD>", "<GO>", "<EOS>", "<UNK>"] + words
         self.word2id_table = self.get_lookup_table(words, list(range(len(words))), default_id)
         self.id2word_table = self.get_lookup_table(list(range(len(words))), words, default_word)
+        self.size = len(words)
 
     def word2id(self, words_tensor):
         return self.word2id_table.lookup(words_tensor)

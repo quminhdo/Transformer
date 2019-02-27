@@ -19,6 +19,7 @@ class Training_Model:
         self.UNK = self.base_params["unk_id"]
         self.source_converter = self.get_converter(languages["source"])
         self.target_converter = self.get_converter(languages["target"])
+        vocab_size = {"source": self.source_converter.size, "target": self.target_converter.size}
         epoch = tf.get_variable(name="epoch", initializer=0, trainable=False)
         self.update_epoch = tf.assign_add(epoch, 1)
         self.learning_rate = self.train_params["learning_rate"] * tf.pow(tf.to_float(self.train_params["decay_rate"]), tf.to_float((epoch - 1) // self.train_params["decay_step"]))
@@ -30,7 +31,6 @@ class Training_Model:
         source_inputs, target_inputs, self.target_outputs = data_batch[0], data_batch[1], data_batch[2]
         self.target_inputs = target_inputs
         # Build model
-        vocab_size = self.get_vocab_size()
         seq2seq = Transformer(
         vocab_size["source"], 
         vocab_size["target"], 
@@ -95,12 +95,6 @@ class Training_Model:
         print("Target:")
         print(target)
 
-    def get_vocab_size(self):
-        vocab_size = {}
-        for key, value in self.languages.items():
-            vocab_size[key] = utils.get_file_size(os.path.join(self.data_path, "vocab_{}".format(value)))
-        return vocab_size
-    
     def check_restore_params(self):
         ckpt = tf.train.get_checkpoint_state(self.model_path)
         if ckpt and ckpt.model_checkpoint_path:
@@ -136,6 +130,7 @@ class Validating_Model:
         self.UNK = self.base_params["unk_id"]
         self.source_converter = self.get_converter(languages["source"])
         self.target_converter = self.get_converter(languages["target"])
+        vocab_size = {"source": self.source_converter.size, "target": self.target_converter.size}
         self.sess = tf.Session(graph=graph)
         # Prepare data 
         dataset = self.prepare_dataset()
@@ -143,7 +138,6 @@ class Validating_Model:
         data_batch = self.iterator.get_next()
         source_inputs, target_inputs, self.target_outputs = data_batch[0], data_batch[1], data_batch[2]
         # Build model
-        vocab_size = self.get_vocab_size()
         seq2seq = Transformer(
         vocab_size["source"], 
         vocab_size["target"], 
@@ -189,12 +183,6 @@ class Validating_Model:
         unpadded_pos = tf.cast(tf.not_equal(self.target_outputs, self.PAD), tf.float32) 
         return unpadded_pos
 
-    def get_vocab_size(self):
-        vocab_size = {}
-        for key, value in self.languages.items():
-            vocab_size[key] = utils.get_file_size(os.path.join(self.data_path, "vocab_{}".format(value)))
-        return vocab_size
-
     def restore_params(self):
         ckpt = tf.train.get_checkpoint_state(self.model_path)
         if ckpt and ckpt.model_checkpoint_path:
@@ -227,12 +215,12 @@ class Inference_Model:
         self.detokenizer = self.get_detokenizer()
         self.source_converter = self.get_converter(languages["source"])
         self.target_converter = self.get_converter(languages["target"])
+        vocab_size = {"source": self.source_converter.size, "target": self.target_converter.size}
         self.sess = tf.Session()
         # Input
         self.input_holder = tf.placeholder(tf.string, [None, None])
         inputs = self.source_converter.word2id(self.input_holder)
         # Build model
-        vocab_size = self.get_vocab_size()
         seq2seq = Transformer(
         vocab_size["source"], 
         vocab_size["target"], 
@@ -288,12 +276,6 @@ class Inference_Model:
         
     def get_converter(self, language):
         return utils.Word_Id_Converter(os.path.join(self.data_path, "vocab_{}".format(language)), self.UNK)
-
-    def get_vocab_size(self):
-        vocab_size = {}
-        for key, value in self.languages.items():
-            vocab_size[key] = utils.get_file_size(os.path.join(self.data_path, "vocab_{}".format(value)))
-        return vocab_size
 
     def process_inputs(self, inputs): # list of text
         tokens_list = self.tokenizer(inputs)
