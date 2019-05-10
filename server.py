@@ -42,10 +42,10 @@ def handle_client(clientSocket, addr, translate, languages):
         if recv_dict is not None:
             text = recv_dict["text"]
             plot = recv_dict["plot"]
-            outputs, tokenized_inputs, tokenized_outputs, attention_weights = translate([text])
-            sent_dict = {"translation": outputs}
+            outputs, hypotheses, tokenized_inputs, tokenized_outputs, attention_weights, self_attention_weights = translate([text])
+            sent_dict = {"translation": outputs, "hypotheses": hypotheses}
             if plot:
-                sent_dict.update({"tokenized_inputs":tokenized_inputs, "tokenized_outputs": tokenized_outputs, "attention_weights": attention_weights})
+                sent_dict.update({"tokenized_inputs":tokenized_inputs, "tokenized_outputs": tokenized_outputs, "attention_weights": attention_weights, "self_attention_weights": self_attention_weights})
             clientSocket.sendall(pickle.dumps(sent_dict))
             clientSocket.sendall(b"<EOM>")
         else:
@@ -60,12 +60,14 @@ if __name__ == "__main__":
     parser.add_argument("--language", "-l", help="format: 'source_language'-'target_language', use only the first two letters")
     parser.add_argument("--ip", "-i", help="ip address")
     parser.add_argument("--port", "-p", type=int, help="port number")
+    parser.add_argument("--epoch", "-e", type=int, help="checkpoint. default checkpoint is the latest epoch.")
     args = parser.parse_args()
     data = args.data
     model = args.model
+    epoch = args.epoch
     languages = {"source":args.language[:2], "target":args.language[-2:]}
     model_path = "{}.{}_{}.{}".format(data, languages["source"], languages["target"], model)
-    translate = models.Inference_Model(data, languages, model_path)
+    translate = models.Inference_Model(data, languages, model_path, epoch)
     HOST = args.ip
     PORT = args.port
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

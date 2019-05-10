@@ -51,10 +51,13 @@ class English_Detokenizer:
         return self.twd.detokenize(tokens)
 
 class Word_Id_Converter:
-    def __init__(self, vocab_file_path, default_id, default_word="<DEFAULT>"):
+    def __init__(self, vocab_file_path, default_id, source, default_word="<DEFAULT>"):
         with open(vocab_file_path) as fin:
-            words = [line.split()[0] if line != " " else line for line in fin.read().splitlines()]
-            words = ["<PAD>", "<GO>", "<EOS>", "<UNK>"] + words
+            words = [line.split()[0] for line in fin.read().splitlines()]
+            if source:
+                words = ["<PAD>", "<UNK>"] + words
+            else:
+                words = ["<PAD>", "<GO>", "<EOS>", "<UNK>"] + words
         self.word2id_table = self.get_lookup_table(words, list(range(len(words))), default_id)
         self.id2word_table = self.get_lookup_table(list(range(len(words))), words, default_word)
         self.size = len(words)

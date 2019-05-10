@@ -10,50 +10,51 @@ class Transformer:
         attention_dim,
         n_heads,
         hidden_size,
-        disable_layer_norm,
         go_id,
         eos_id,
-        pad_id):
+        pad_id,
+        source_word_vectors=None,
+        target_word_vectors=None):
         self.GO = go_id
         self.EOS = eos_id
         self.PAD = pad_id
         self.target_vocab_size = target_vocab_size
         self.d_model = d_model
         self.n_heads = n_heads
-        self.source_embedding_layer = layers.Embedding_Layer(source_vocab_size, d_model, "source_word_embedding")
-        self.positional_encoder = layers.Positional_Encoder()
-        self.encoder_stack = layers.Encoder_Stack(n_layers, n_heads, d_model, attention_dim, hidden_size, disable_layer_norm)
-        self.target_embedding_layer = layers.Embedding_Layer(target_vocab_size, d_model, "target_word_embedding")
-        self.decoder_stack = layers.Decoder_Stack(n_layers, n_heads, d_model, attention_dim, hidden_size, disable_layer_norm)
+        self.source_embedding_layer = layers.Embedding_Layer(source_vocab_size, d_model, "source_word_embedding", trained_word_vectors=source_word_vectors)
+        self.positional_encoder = layers.Positional_Encoder(d_model)
+        self.encoder_stack = layers.Encoder_Stack(n_layers, n_heads, d_model, attention_dim, hidden_size)
+        self.target_embedding_layer = layers.Embedding_Layer(target_vocab_size, d_model, "target_word_embedding", trained_word_vectors=target_word_vectors)
+        self.decoder_stack = layers.Decoder_Stack(n_layers, n_heads, d_model, attention_dim, hidden_size)
 
-    def __call__(self, source_inputs, target_inputs=None, length_penalty_weight=None, coverage_penalty_weight=None, beam_size=None):
+    def __call__(self, source_inputs, target_inputs=None, dropout=None, length_penalty_weight=None, coverage_penalty_weight=None, beam_size=None):
         encoder_attention_mask = self.get_encoder_attention_mask(source_inputs)
-        encoder_outputs = self.encode(source_inputs, encoder_attention_mask)
+        encoder_outputs, self_attention_weights = self.encode(source_inputs, encoder_attention_mask, dropout)
         if target_inputs is None:
-            outputs, attention_weights, fed_inputs =  self.beam_search_decode(encoder_outputs, encoder_attention_mask, beam_size, length_penalty_weight, coverage_penalty_weight)
-            output_dict = {"outputs": outputs, "attention_weights": attention_weights, "fed_inputs":fed_inputs}
+            outputs, hypotheses, attention_weights, fed_inputs =  self.beam_search_decode(encoder_outputs, encoder_attention_mask, beam_size, length_penalty_weight, coverage_penalty_weight)
+            output_dict = {"outputs": outputs, "hypotheses": hypotheses, "attention_weights": attention_weights, "fed_inputs":fed_inputs, "self_attention_weights": self_attention_weights}
         else:
-            logits, outputs = self.decode_with_teacher_forcing(target_inputs, encoder_outputs, encoder_attention_mask)
+            logits, outputs = self.decode_with_teacher_forcing(target_inputs, encoder_outputs, encoder_attention_mask, dropout)
             output_dict = {"logits": logits, "outputs": outputs}
         return output_dict
 
-    def encode(self, inputs, encoder_attention_mask):
+    def encode(self, inputs, encoder_attention_mask, dropout):
         embedding_outputs = self.source_embedding_layer(inputs)
-        encoder_inputs = self.positional_encoder(embedding_outputs)
-        encoder_outputs = self.encoder_stack(encoder_inputs, encoder_attention_mask)
-        return encoder_outputs 
+        encoder_inputs = self.positional_encoder(embedding_outputs, dropout)
+        encoder_outputs, self_attention_weights = self.encoder_stack(encoder_inputs, encoder_attention_mask, dropout)
+        return encoder_outputs, self_attention_weights
 
-    def decode_with_teacher_forcing(self, target_inputs, encoder_outputs, encoder_attention_mask):
+    def decode_with_teacher_forcing(self, target_inputs, encoder_outputs, encoder_attention_mask, dropout):
         max_decode_length = tf.shape(target_inputs)[1]
         decoder_attention_mask = self.get_decoder_attention_mask(max_decode_length)
         embedding_outputs = self.target_embedding_layer(target_inputs)
-        decoder_inputs = self.positional_encoder(embedding_outputs)
-        decoder_outputs, _ = self.decoder_stack(decoder_inputs, decoder_attention_mask, encoder_outputs, encoder_attention_mask)
+        decoder_inputs = self.positional_encoder(embedding_outputs, dropout)
+        decoder_outputs, _ = self.decoder_stack(decoder_inputs, decoder_attention_mask, encoder_outputs, encoder_attention_mask, dropout)
         logits = self.target_embedding_layer.linear(decoder_outputs)
         outputs = tf.argmax(tf.nn.softmax(logits), -1, output_type=tf.int32)
         return logits, outputs
 
-    def beam_search_decode(self, encoder_outputs, encoder_attention_mask, beam_size, length_penalty_weight, coverage_penalty_weight, extra_decode_length=20):
+    def beam_search_decode(self, encoder_outputs, encoder_attention_mask, beam_size, length_penalty_weight, coverage_penalty_weight, dropout=None, extra_decode_length=50):
         batch_size = tf.shape(encoder_outputs)[0]
         encode_length = tf.shape(encoder_outputs)[1]
         max_decode_length = encode_length + extra_decode_length
@@ -101,7 +102,7 @@ class Transformer:
             probabilities = tf.cond(tf.equal(i, 1), lambda: cur_probabilities, lambda: generate_probabilities())
             probabilities = tf.reduce_prod(probabilities, axis=-1) # shape [batch_size*beam_size, target_vocab_size]
 
-            length_penalty = tf.pow((5.0 + tf.to_float(sequence_length))/(5.0 + 1.0), length_penalty_weight)
+            length_penalty = tf.pow((5.0 + tf.cast(sequence_length, tf.float32))/(5.0 + 1.0), length_penalty_weight)
             
             unpadded_pos = tf.cast(tf.not_equal(fed_inputs, self.PAD), tf.float32)
             masked_attention_weights = tf.expand_dims(unpadded_pos, -1)*attention_weights
@@ -112,14 +113,14 @@ class Transformer:
             return scores
 
         def generate_outputs(i, outputs, scores, _beam_size):
-            top_scores, indices = tf.nn.top_k(scores, k=_beam_size) # shape [batch_size, beam_size]
+            top_scores, indices = tf.nn.top_k(scores, k=_beam_size) # shape [batch_size, _beam_size]
             top_beams = tf.floordiv(indices, self.target_vocab_size)
             top_beams = _beam_size*tf.expand_dims(tf.range(batch_size), -1)+top_beams
             top_beams = tf.reshape(top_beams, [batch_size*_beam_size])
             top_ids = tf.floormod(indices, self.target_vocab_size)
             top_ids = tf.reshape(top_ids, [batch_size*_beam_size, 1])
             outputs = tf.cond(tf.equal(i, 1), lambda: top_ids, lambda: tf.concat([tf.gather(outputs, top_beams), top_ids], -1))
-            return outputs
+            return outputs, top_beams
 
         def continue_decode(fed_inputs, attention_weights, outputs, finished, scores, i):
             return tf.logical_and(tf.less(tf.reduce_sum(finished), tf.size(finished)), tf.less(tf.shape(outputs)[1], max_decode_length))
@@ -131,18 +132,19 @@ class Transformer:
             fed_inputs = tf.cond(tf.equal(i, 1), lambda: fed_inputs, lambda: tf.concat([fed_inputs, tf.expand_dims(next_ids, -1)], -1))
             sequence_length = self.get_sequence_length(fed_inputs)
             embedding_outputs = self.target_embedding_layer(fed_inputs)
-            decoder_inputs = self.positional_encoder(embedding_outputs)
-            decoder_outputs, attention_weights = self.decoder_stack(decoder_inputs, decoder_attention_mask[:, :, :i, :i], encoder_outputs, encoder_attention_mask)
+            decoder_inputs = self.positional_encoder(embedding_outputs, dropout)
+            decoder_outputs, attention_weights = self.decoder_stack(decoder_inputs, decoder_attention_mask[:, :, :i, :i], encoder_outputs, encoder_attention_mask, dropout)
             logits = self.target_embedding_layer.linear(decoder_outputs)
             attention_weights = tf.reduce_mean(attention_weights, axis=1)
             scores = compute_score(i, outputs, logits, sequence_length, attention_weights, fed_inputs) 
-            outputs = generate_outputs(i, outputs, scores, beam_size)
+            outputs, _ = generate_outputs(i, outputs, scores, beam_size)
             cur_outputs = outputs[:, -1]
             finished = tf.maximum(finished, tf.cast(tf.equal(cur_outputs, self.EOS), finished.dtype))
             return fed_inputs, attention_weights, outputs, finished, scores, i
         fed_inputs, attention_weights, outputs, _, scores, i = tf.while_loop(continue_decode, step, list(initial_variables.values()), shape_invariants=list(variables_shape.values()))
-        outputs = generate_outputs(i, outputs[:, :-1], scores, 1)
-        return outputs, attention_weights, fed_inputs
+        top_outputs, top_beams = generate_outputs(i, outputs[:, :-1], scores, 1)
+        attention_weights = tf.gather(attention_weights, tf.reshape(top_beams, [batch_size]))
+        return top_outputs, outputs, attention_weights, fed_inputs
 
     def get_encoder_attention_mask(self, x, neg_inf=-1e15): # shape: [batch_size, max_len]
         padded_positions = tf.cast(tf.equal(x, self.PAD), tf.float32)

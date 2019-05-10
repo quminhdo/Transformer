@@ -10,12 +10,22 @@ def change_font(text_list, font):
     for text in text_list:
         text.set_font_properties(font)
 
+def remove_redundancy(target_words, alignment, symbol):
+    try:
+        eos_pos = target_words.index(symbol)
+        target_words = target_words[:eos_pos]
+        alignment = alignment[:eos_pos]
+    except ValueError:
+        pass
+    return target_words, alignment
+
 def plot_attention_weights(source_words_list, target_words_list, attention_weights):
     font = font_manager.FontProperties(fname="ipag.ttf")
     for i in range(len(source_words_list)):
         source_words = source_words_list[i]
         target_words = target_words_list[i]
         alignment = attention_weights[i]
+        target_words, alignment = remove_redundancy(target_words, alignment, "<EOS>")
         fig, ax = plt.subplots()
         im = ax.imshow(alignment)
         ax.set_xticks(np.arange(len(source_words)))
@@ -58,8 +68,11 @@ if __name__ == "__main__":
                     msg += packet
                 recv_dict = pickle.loads(msg)
                 print("Translation:", ' '.join(recv_dict["translation"]))
+                print("Hypotheses:")
+                print('\n'.join(recv_dict["hypotheses"]))
                 print("Delay in sec:", time.time()-start)
                 if plot:
+                    plot_attention_weights(recv_dict["tokenized_inputs"], recv_dict["tokenized_inputs"], recv_dict["self_attention_weights"])
                     plot_attention_weights(recv_dict["tokenized_inputs"], recv_dict["tokenized_outputs"], recv_dict["attention_weights"])                    
             except KeyboardInterrupt:
                 s.sendall(pickle.dumps(None))

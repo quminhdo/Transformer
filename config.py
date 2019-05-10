@@ -3,22 +3,22 @@ from collections import defaultdict
 MODEL_PARAMS = defaultdict(
     lambda:None,
     d_model=512,
-    n_layers=6,
+    n_layers=3,
     attention_dim=512,
     n_heads=8,
     hidden_size=2048,
     beam_size=5,
     length_penalty_weight=0.5,
     coverage_penalty_weight=0.5,
-    disable_layer_norm=False,
 )
 
 TRAIN_PARAMS = defaultdict(
     lambda:None,
     learning_rate = 0.0001,
-    batch_size = 32,
+    batch_size = 64,
     decay_rate = 0.5,
-    decay_step = 10,
+    decay_step = 5,
+    dropout = None,
 )
 
 IKNOW_DATA_PARAMS = defaultdict(
@@ -42,4 +42,5 @@ BASE_PARAMS = defaultdict(
     eos_id = 2,
     unk_id = 3,
     tokenize_method = "",
+    glove = False,
 )

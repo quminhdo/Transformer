@@ -1,6 +1,7 @@
 import os
 import time
 import tensorflow as tf
+import numpy as np
 import utils
 import config
 from transformer import Transformer
@@ -17,8 +18,11 @@ class Training_Model:
         self.GO = self.base_params["go_id"]
         self.EOS = self.base_params["eos_id"]
         self.UNK = self.base_params["unk_id"]
-        self.source_converter = self.get_converter(languages["source"])
-        self.target_converter = self.get_converter(languages["target"])
+        if self.base_params["glove"] and languages["source"] == "en":
+            self.source_converter = self.get_converter(os.path.join(data_path, "glove_words"), source=True)
+        else:
+            self.source_converter = self.get_converter(os.path.join(data_path, "vocab_{}".format(languages["source"])), source=True)
+        self.target_converter = self.get_converter(os.path.join(data_path, "vocab_{}".format(languages["target"])), source=False)
         vocab_size = {"source": self.source_converter.size, "target": self.target_converter.size}
         epoch = tf.get_variable(name="epoch", initializer=0, trainable=False)
         self.update_epoch = tf.assign_add(epoch, 1)
@@ -31,6 +35,9 @@ class Training_Model:
         source_inputs, target_inputs, self.target_outputs = data_batch[0], data_batch[1], data_batch[2]
         self.target_inputs = target_inputs
         # Build model
+        source_word_vectors = None
+        if self.base_params["glove"] and languages["source"] == "en":
+            source_word_vectors = self.get_source_word_vectors("glove_vectors")
         seq2seq = Transformer(
         vocab_size["source"], 
         vocab_size["target"], 
@@ -39,12 +46,12 @@ class Training_Model:
         self.model_params["attention_dim"],
         self.model_params["n_heads"],
         self.model_params["hidden_size"],
-        self.model_params["disable_layer_norm"],
         self.base_params["go_id"],
         self.base_params["eos_id"],
-        self.base_params["pad_id"]
+        self.base_params["pad_id"],
+        source_word_vectors=source_word_vectors
         )
-        output_dict = seq2seq(source_inputs, target_inputs)
+        output_dict = seq2seq(source_inputs, target_inputs, dropout=self.train_params["dropout"])
         logits = output_dict["logits"]
         self.outputs = output_dict["outputs"]
         crossents = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.target_outputs, logits=logits)
@@ -55,7 +62,7 @@ class Training_Model:
         optimizer = tf.train.AdamOptimizer(self.learning_rate)
         self.train_op = optimizer.minimize(self.loss)
         # save and restore
-        self.saver = tf.train.Saver(max_to_keep=20)
+        self.saver = tf.train.Saver(max_to_keep=50)
         self.sess.run(tf.tables_initializer())
         self.check_restore_params()
 
@@ -79,8 +86,12 @@ class Training_Model:
                 break;
         return log, epoch
 
-    def get_converter(self, language):
-        return utils.Word_Id_Converter(os.path.join(self.data_path, "vocab_{}".format(language)), self.UNK)
+    def get_converter(self, vocab_file_path, source):
+        return utils.Word_Id_Converter(vocab_file_path, self.UNK, source)
+
+    def get_source_word_vectors(self, file_name):
+        vectors = np.loadtxt(os.path.join(self.data_path, file_name))
+        return tf.constant(vectors, dtype=tf.float32) 
 
     def get_mask_weight(self):
         unpadded_pos = tf.cast(tf.not_equal(self.target_outputs, self.PAD), tf.float32) 
@@ -110,7 +121,7 @@ class Training_Model:
 
     def get_iterator(self, dataset):
         pad_value = tf.cast(self.PAD, tf.int32)
-        dataset = dataset.shuffle(4000000, seed=0, reshuffle_each_iteration=True)
+        dataset = dataset.shuffle(4000000, reshuffle_each_iteration=True)
         dataset = dataset.padded_batch(self.train_params["batch_size"], ([None], [None], [None]), (pad_value, pad_value, pad_value), drop_remainder=False)
         return dataset.make_initializable_iterator()
 
@@ -128,8 +139,11 @@ class Validating_Model:
         self.GO = self.base_params["go_id"]
         self.EOS = self.base_params["eos_id"]
         self.UNK = self.base_params["unk_id"]
-        self.source_converter = self.get_converter(languages["source"])
-        self.target_converter = self.get_converter(languages["target"])
+        if self.base_params["glove"] and languages["source"] == "en":
+            self.source_converter = self.get_converter(os.path.join(data_path, "glove_words"), source=True)
+        else:
+            self.source_converter = self.get_converter(os.path.join(data_path, "vocab_{}".format(languages["source"])), source=True)
+        self.target_converter = self.get_converter(os.path.join(data_path, "vocab_{}".format(languages["target"])), source=False)
         vocab_size = {"source": self.source_converter.size, "target": self.target_converter.size}
         self.sess = tf.Session(graph=graph)
         # Prepare data 
@@ -138,6 +152,9 @@ class Validating_Model:
         data_batch = self.iterator.get_next()
         source_inputs, target_inputs, self.target_outputs = data_batch[0], data_batch[1], data_batch[2]
         # Build model
+        source_word_vectors = None
+        if self.base_params["glove"] and languages["source"] == "en":
+            source_word_vectors = self.get_source_word_vectors("glove_vectors")
         seq2seq = Transformer(
         vocab_size["source"], 
         vocab_size["target"], 
@@ -146,10 +163,10 @@ class Validating_Model:
         self.model_params["attention_dim"],
         self.model_params["n_heads"],
         self.model_params["hidden_size"],
-        self.model_params["disable_layer_norm"],
         self.base_params["go_id"],
         self.base_params["eos_id"],
-        self.base_params["pad_id"]
+        self.base_params["pad_id"],
+        source_word_vectors=source_word_vectors
         )
         output_dict = seq2seq(source_inputs, target_inputs)
         logits = output_dict["logits"]
@@ -176,8 +193,12 @@ class Validating_Model:
                 break;
         return log
 
-    def get_converter(self, language):
-        return utils.Word_Id_Converter(os.path.join(self.data_path, "vocab_{}".format(language)), self.UNK)
+    def get_converter(self, vocab_file_path, source):
+        return utils.Word_Id_Converter(vocab_file_path, self.UNK, source)
+
+    def get_source_word_vectors(self, file_name):
+        vectors = np.loadtxt(os.path.join(self.data_path, file_name))
+        return tf.constant(vectors, dtype=tf.float32) 
 
     def get_mask_weight(self):
         unpadded_pos = tf.cast(tf.not_equal(self.target_outputs, self.PAD), tf.float32) 
@@ -201,7 +222,7 @@ class Validating_Model:
         return dataset.make_initializable_iterator()
 
 class Inference_Model:
-    def __init__(self, data_path, languages, model_path):
+    def __init__(self, data_path, languages, model_path, epoch):
         self.model_params = config.MODEL_PARAMS
         self.base_params = config.BASE_PARAMS
         self.data_path = data_path
@@ -213,14 +234,20 @@ class Inference_Model:
         self.UNK = self.base_params["unk_id"]
         self.tokenizer = self.get_tokenizer()
         self.detokenizer = self.get_detokenizer()
-        self.source_converter = self.get_converter(languages["source"])
-        self.target_converter = self.get_converter(languages["target"])
+        if self.base_params["glove"] and languages["source"] == "en":
+            self.source_converter = self.get_converter(os.path.join(data_path, "glove_words"), source=True)
+        else:
+            self.source_converter = self.get_converter(os.path.join(data_path, "vocab_{}".format(languages["source"])), source=True)
+        self.target_converter = self.get_converter(os.path.join(data_path, "vocab_{}".format(languages["target"])), source=False)
         vocab_size = {"source": self.source_converter.size, "target": self.target_converter.size}
         self.sess = tf.Session()
         # Input
         self.input_holder = tf.placeholder(tf.string, [None, None])
         inputs = self.source_converter.word2id(self.input_holder)
         # Build model
+        source_word_vectors = None
+        if self.base_params["glove"] and languages["source"] == "en":
+            source_word_vectors = self.get_source_word_vectors("glove_vectors")
         seq2seq = Transformer(
         vocab_size["source"], 
         vocab_size["target"], 
@@ -229,32 +256,36 @@ class Inference_Model:
         self.model_params["attention_dim"],
         self.model_params["n_heads"],
         self.model_params["hidden_size"],
-        self.model_params["disable_layer_norm"],
         self.base_params["go_id"],
         self.base_params["eos_id"],
-        self.base_params["pad_id"]
+        self.base_params["pad_id"],
+        source_word_vectors=source_word_vectors
         )
 #        output_dict = seq2seq(inputs)
         output_dict = seq2seq(inputs, length_penalty_weight=self.model_params["length_penalty_weight"], coverage_penalty_weight=self.model_params["coverage_penalty_weight"], beam_size=self.model_params["beam_size"])
         fed_inputs = output_dict["fed_inputs"]
         self.attention_weights = output_dict["attention_weights"]
         outputs = output_dict["outputs"]
+        hypotheses = output_dict["hypotheses"]
+        self.self_attention_weights = output_dict["self_attention_weights"]
         self.outputs = self.target_converter.id2word(outputs)
+        self.hypotheses = self.target_converter.id2word(hypotheses)
         self.fed_inputs = self.target_converter.id2word(fed_inputs)
         # Save and restore
         self.saver = tf.train.Saver()
         self.sess.run(tf.tables_initializer())
-        self.restore_params()
+        self.restore_params(epoch)
 
     def __call__(self, inputs): 
         tokenized_inputs = self.process_inputs(inputs)
 #        print(tokenized_inputs)
-        outputs, fed_inputs, attention_weights = self.sess.run((self.outputs, self.fed_inputs, self.attention_weights), feed_dict={self.input_holder:tokenized_inputs})
+        outputs, hypotheses, fed_inputs, attention_weights, self_attention_weights = self.sess.run((self.outputs, self.hypotheses, self.fed_inputs, self.attention_weights, self.self_attention_weights), feed_dict={self.input_holder:tokenized_inputs})
 #        self.check_inference(id_inputs, id_outputs)
         outputs, tokenized_outputs = self.process_output(outputs)
+        hypotheses, _ = self.process_output(hypotheses)
 #        _, tokenized_fed_inputs = self.process_output(fed_inputs)
 #        print(tokenized_fed_inputs)
-        return outputs, tokenized_inputs, tokenized_outputs, attention_weights
+        return outputs, hypotheses, tokenized_inputs, tokenized_outputs, attention_weights, self_attention_weights
 
     def check_inference(self, id_inputs, id_outputs):
         print("ID inputs")
@@ -274,8 +305,12 @@ class Inference_Model:
         if self.languages["target"] == "ja":
             return utils.Japanese_Detokenizer()
         
-    def get_converter(self, language):
-        return utils.Word_Id_Converter(os.path.join(self.data_path, "vocab_{}".format(language)), self.UNK)
+    def get_converter(self, vocab_file_path, source):
+        return utils.Word_Id_Converter(vocab_file_path, self.UNK, source)
+
+    def get_source_word_vectors(self, file_name):
+        vectors = np.loadtxt(os.path.join(self.data_path, file_name))
+        return tf.constant(vectors, dtype=tf.float32) 
 
     def process_inputs(self, inputs): # list of text
         tokens_list = self.tokenizer(inputs)
@@ -288,10 +323,14 @@ class Inference_Model:
         outputs = [output[:output.find("<EOS>")].strip() for output in outputs]
         return outputs, tokenized_outputs # list of text
 
-    def restore_params(self):
-        ckpt = tf.train.get_checkpoint_state(self.model_path)
-        if ckpt and ckpt.model_checkpoint_path:
-            print("Restoring trained parameters...")
-            self.saver.restore(self.sess, ckpt.model_checkpoint_path)
+    def restore_params(self, epoch):
+        if epoch:
+            checkpoint_path = os.path.join(self.model_path, "epoch_{}".format(epoch))
+        else:
+            ckpt = tf.train.get_checkpoint_state(self.model_path)
+            checkpoint_path = ckpt.model_checkpoint_path
+        if checkpoint_path:
+            print("Restoring trained parameters from {}".format(checkpoint_path))
+            self.saver.restore(self.sess, checkpoint_path)
         else:
             print("No saved parameters found")

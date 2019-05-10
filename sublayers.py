@@ -15,6 +15,7 @@ class MultiHead_Attention:
     def __call__(self, q, params):
         vk = params["vk"]
         attention_mask = params["attention_mask"]
+        dropout = params["attention_dropout"]
         q = self.q_dense_layer(q)
         k = self.k_dense_layer(vk)
         v = self.v_dense_layer(vk)
@@ -25,7 +26,7 @@ class MultiHead_Attention:
 #            cache.update({"v":v})
         q_head, k_head, v_head = [self.split_heads(x) for x in [q, k, v]]
 #        attention_mask = tf.expand_dims(attention_mask, 1) # shape [batch_size, 1, length, 1]
-        output_head, attention_weights = self.scaled_dot_product_attention(q_head, k_head, v_head, attention_mask)
+        output_head, attention_weights = self.scaled_dot_product_attention(q_head, k_head, v_head, attention_mask, dropout)
         output = self.combine_heads(output_head)
         output = self.output_dense_layer(output)
         return output, attention_weights
@@ -36,10 +37,12 @@ class MultiHead_Attention:
         x = tf.reshape(x, [batch_size, length, self.n_heads, self.d_head])
         return tf.transpose(x, [0, 2, 1, 3]) # shape [batch_size, n_heads, length, d_head]
 
-    def scaled_dot_product_attention(self, q, k, v, attention_mask):
+    def scaled_dot_product_attention(self, q, k, v, attention_mask, dropout):
         x = tf.matmul(q, k, transpose_b=True) # shape [batch_size, n_heads, q_length, k_length]
         x = x * tf.rsqrt(self.d_head*1.0)
         attention_weights = tf.nn.softmax(x + attention_mask)
+        if dropout:
+            attention_weights = tf.nn.dropout(attention_weights, rate=dropout)
         y = tf.matmul(attention_weights, v)
         return y, attention_weights
         
@@ -56,20 +59,26 @@ class Feed_Forward:
 
     def __call__(self, x, params):
         h = self.hidden_layer(x)
+        if params["feed_forward_dropout"]:
+            h = tf.nn.dropout(h, rate=params["feed_forward_dropout"])
         y = self.output_layer(h)
         return y
 
 class Add_Norm_Wrapper:
-    def __init__(self, module, disable=False):
+    def __init__(self, module):
         self.module = module
-        self.layer_norm = None if disable else Layer_Norm()
+        self.layer_norm = Layer_Norm()
 
     def __call__(self, x, **params):
         y = self.module(x, params)
-        if self.layer_norm is None:
-            return y
         if isinstance(y, tuple):
-            return self.layer_norm(x + y[0]), y[1]
+            y = list(y)
+            if params["residual_dropout"]:
+                y[0] = tf.nn.dropout(y[0], rate=params["residual_dropout"])
+            y[0] = self.layer_norm(x + y[0])
+            return tuple(y)
+        if params["residual_dropout"]:
+            y = tf.nn.dropout(y, rate=params["residual_dropout"])
         return self.layer_norm(x + y)
 
 class Layer_Norm:
